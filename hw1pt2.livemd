@@ -1,0 +1,687 @@
+# 11785 - HW1PT2
+
+```elixir
+Mix.install(
+  [
+    {:exla, ">= 0.0.0"},
+    {:npy, "~> 0.1.1"},
+    {:axon, "~> 0.7.0"},
+    {:table_rex, "~> 3.1.1"},
+    {:kino, "~> 0.7.0"},
+    {:finch, "~> 0.19.0"},
+    {:jason, "~> 1.4"},
+    {:polaris, "~> 0.1.0"}
+  ],
+  config: [nx: [default_backend: EXLA.Backend]]
+)
+
+```
+
+## Configuration
+
+```elixir
+config = %{
+  context: 30,
+  epochs: 5,
+  batch_size: 1024,
+  data_root: "/home/livebook"
+  #data_root: "/Users/darren"
+}
+```
+
+```elixir
+
+defmodule RawData do 
+
+  def ensure_available(config) do 
+    if File.exists?("#{config.data_root}/data") do 
+      :exists
+    else
+      download(config) |> untar(config)
+    end
+  end
+
+  defp download(config) do 
+    url = "https://s3.amazonaws.com/votre-montreal.com/data.tar.gz"
+    destination = "#{config.data_root}/data.tar.gz"
+
+    #{_, exit_status} = System.cmd("curl", ["-o", destination, url])
+
+      
+    {_, exit_status} = System.cmd("wget", [url, "-O", destination])
+    
+    if exit_status == 0 do
+      :ok
+    else
+      :error
+    end
+  end
+
+  defp untar(:error, _), do: :error
+  defp untar(:ok, config) do 
+    {_, exit_status} = System.cmd("tar", ["-xzvf",  "#{config.data_root}/data.tar.gz"])
+
+    if exit_status == 0 do
+      :ok
+    else
+      :error
+    end
+  end
+
+end
+
+RawData.ensure_available(config)
+
+```
+
+```elixir
+defmodule Globals do 
+  def phonemes(), do: [
+    "[SIL]",
+    "AA",
+    "AE",
+    "AH",
+    "AO",
+    "AW",
+    "AY",
+    "B",
+    "CH",
+    "D",
+    "DH",
+    "EH",
+    "ER",
+    "EY",
+    "F",
+    "G",
+    "HH",
+    "IH",
+    "IY",
+    "JH",
+    "K",
+    "L",
+    "M",
+    "N",
+    "NG",
+    "OW",
+    "OY",
+    "P",
+    "R",
+    "S",
+    "SH",
+    "T",
+    "TH",
+    "UH",
+    "UW",
+    "V",
+    "W",
+    "Y",
+    "Z",
+    "ZH",
+    "[SOS]",
+    "[EOS]"
+  ]
+end
+
+```
+
+## Utilities
+
+```elixir
+defmodule FastArray do
+  @moduledoc """
+  A module that provides a fast, fixed-size array backed by a 1D Nx
+  """
+
+  defstruct [:storage, :type]
+
+  # Create a new LongArray of the given size and default value.
+  @spec new(pos_integer(), integer()) :: %__MODULE__{}
+  def new(size, default_value, type \\ {:s, 64}) when is_integer(default_value) and is_integer(size) and size > 0 do
+    
+    default_value_tensor = Nx.tensor(default_value, type: type)  # Create a tensor with the appropriate type
+     
+    %__MODULE__{
+      storage: Nx.broadcast(default_value_tensor, {size}) ,
+      type: type
+    }
+  end
+
+  # Get the value at the specified index
+  def get(tensor, index) when is_integer(index) and index >= 0 do
+    tensor.storage
+    |> Nx.slice([index], [1])  # Slice out one element starting at `index`
+    |> Nx.to_flat_list()        # Convert the slice to a flat list
+    |> hd()    
+  end
+
+  # Put a value into the specified index
+  def put(%__MODULE__{storage: storage, type: type} = fast_array, index, value) when is_integer(index) and index >= 0 do
+    storage = Nx.put_slice(storage, [index], Nx.tensor([value], type: type))
+    %{fast_array | storage: storage}
+  end
+
+  # Bisect right function - find the insertion point to maintain sorted order
+  def bisect_right(%FastArray{storage: tensor}, value) do
+    size = Nx.size(tensor)  # Get the size of the tensor
+    bisect_right_helper(tensor, value, 0, size - 1)
+  end
+
+  # Recursive helper function for bisect_right
+  defp bisect_right_helper(tensor, value, low, high) when low <= high do
+    mid = div(low + high, 2)
+    mid_value = get(%FastArray{storage: tensor}, mid)
+
+    cond do
+      mid_value <= value -> bisect_right_helper(tensor, value, mid + 1, high)
+      true -> bisect_right_helper(tensor, value, low, mid - 1)
+    end
+  end
+
+  defp bisect_right_helper(_, _, low, _), do: low
+  
+end
+
+
+```
+
+## Transformations
+
+```elixir
+defmodule Masks do
+  
+  def freq(mask, low \\ 0.0, high \\ 28.0, f \\ 4) do
+    # Randomly choose f between 3 and F
+    f_value = :rand.uniform() * (f - 3.0) + 3.0
+    f_value = Float.floor(f_value) |> trunc()
+  
+    # Randomly choose the starting frequency
+    f0_value = :rand.uniform() * (high - f_value - low) + low
+    f0_value = Float.floor(f0_value) |> trunc()
+  
+    # Create the zero mask along the frequency dimension
+    mask_shape = Nx.shape(mask)
+    mask_slice = Nx.slice(mask, [0, f0_value], [elem(mask_shape, 0), f_value])
+  
+    # Subtract the slice from the mask, effectively zeroing out that portion
+    mask = Nx.put_slice(mask, [0, f0_value], Nx.multiply(mask_slice, Nx.tensor(0.0)))
+  
+    mask
+  end
+
+  def time(mask, f \\ 8) do
+    # Get the number of time steps (rows)
+    num_time_steps = Nx.shape(mask) |> elem(0)
+  
+    # Randomly choose t between 3 and F
+    t_value = :rand.uniform() * (f - 3.0) + 3.0
+    t_value = Float.floor(t_value) |> trunc()
+  
+    # Randomly choose the starting time step
+    t0_value = :rand.uniform() * (num_time_steps - t_value)
+    t0_value = Float.floor(t0_value) |> trunc()
+  
+    # Create the zero mask along the time dimension
+    mask_shape = Nx.shape(mask)
+    mask_slice = Nx.slice(mask, [t0_value, 0], [t_value, elem(mask_shape, 1)])
+  
+    # Subtract the slice from the mask, effectively zeroing out that portion
+    mask = Nx.put_slice(mask, [t0_value, 0], Nx.multiply(mask_slice, Nx.tensor(0.0)))
+  
+    mask
+  end
+
+end
+
+defmodule AudioTransforms do
+ 
+  # Function to apply the cepstral mean and variance normalization
+  def cepstral_mean_transform(data) do
+    # Calculate the mean along axis 0 (mean for each column)
+    mean = Nx.mean(data, axes: [0])
+
+    # Subtract the mean from the data (center the data)
+    centered_data = Nx.subtract(data, mean)
+
+    # Calculate the standard deviation along axis 0
+    std_dev = Nx.standard_deviation(centered_data, axes: [0])
+
+    # Normalize the data by dividing by the standard deviation
+    Nx.divide(centered_data, std_dev)
+  end
+
+  def freq_time_masking_transform(batch) do
+    # Get the shape of a single entry in the batch (2D tensor)
+    {batch_size, height, width} = Nx.shape(batch)
+  
+    # Create an initial mask of ones with shape (height, width) for a single entry
+    mask = Nx.broadcast(Nx.tensor(1.0), {height, width})
+  
+    # Apply 0, 1, or 2 random frequency transformations
+    num_freq_xforms = :rand.uniform(3) - 1
+    mask = Enum.reduce(1..num_freq_xforms, mask, fn _, mask_acc -> Masks.freq(mask_acc) end)
+  
+    # Apply 0, 1, or 2 random time transformations
+    num_time_xforms = :rand.uniform(3) - 1
+    mask = Enum.reduce(1..num_time_xforms, mask, fn _, mask_acc -> Masks.time(mask_acc) end)
+  
+    # Broadcast the 2D mask to match the batch size (apply to every 2D tensor in the batch)
+    broadcasted_mask = Nx.broadcast(mask, {batch_size, height, width})
+  
+    # Apply the broadcasted mask to the batch (element-wise multiplication)
+    Nx.multiply(batch, broadcasted_mask)
+  end
+  
+end
+
+```
+
+## DataSets
+
+```elixir
+
+defmodule AudioDataset do
+  
+  @moduledoc """
+  A dataset module for ingesting and padding MFCC data.
+  """
+
+  @max_context 60
+
+  defstruct [
+    :context,
+    :phonemes,
+    :augment,
+    :mfccs,
+    :transcripts,
+    :index_mapping,
+    :length,
+    :total
+  ]
+
+  # Helper function to read data (assuming .npy files)
+  defp read_file(path) do
+    File.read!(path)
+    |> Nx.load_numpy!()
+  end
+
+  # Create a zero padding tensor of shape {MAX_CONTEXT, 28}
+  defp padding(_context) do
+    Nx.tensor(Nx.broadcast(0.0, {@max_context, 28}), type: :f32)
+  end
+
+  # Pad the input array on both sides with padding
+  defp pad(arr, context) do
+    padding = padding(context)
+    Nx.concatenate([padding, arr, padding])
+  end
+
+  # Add MFCC data to dataset, padding it appropriately
+  defp add(i, data, context, total, acc) do
+    length = Nx.shape(data) |> elem(0)
+    padded = pad(data, context)
+
+    %{acc | mfccs: Map.put(acc.mfccs, i, padded), total: total + length}
+  end
+
+  # Ingest a partition of MFCC and transcript data
+  defp ingest_partition(acc, root, context, partition) do
+    mfcc_dir = Path.join([root, partition, "mfcc"])
+    transcript_dir = Path.join([root, partition, "transcript"])
+
+    mfcc_names = Path.wildcard(Path.join(mfcc_dir, "*.npy"))
+    transcript_names = Path.wildcard(Path.join(transcript_dir, "*.npy"))
+
+    if length(mfcc_names) != length(transcript_names) do
+      IO.inspect(length(mfcc_names))
+      IO.inspect(length(transcript_names))
+      
+      raise "Mismatch between MFCC and transcript counts"
+    end
+
+    index_mapping = FastArray.new(length(mfcc_names), 0)
+
+    Enum.with_index(mfcc_names)
+    |> Task.async_stream(fn {mfcc_path, i} ->
+      mfcc = read_file(mfcc_path)
+      mfcc = AudioTransforms.cepstral_mean_transform(mfcc)
+    
+      transcript_path = Path.join(transcript_dir, Path.basename(mfcc_path))
+      transcript = read_file(transcript_path)
+      transcript = Nx.slice(transcript, [1], [Nx.size(transcript) - 2])
+    
+      {i, mfcc, transcript}
+      
+    end, max_concurrency: System.schedulers_online() * 2, ordered: true)  
+    |> Enum.reduce(acc, fn {:ok, {i, mfcc, transcript}}, acc ->
+      acc = add(i, mfcc, context, acc.total, acc)
+    
+      %{
+        acc
+        | transcripts: Map.put(acc.transcripts, i, transcript),
+          index_mapping: FastArray.put(index_mapping, i, acc.total)
+      }
+    end)
+
+  end
+
+  # Initialize the dataset with the specified partitions
+  def new(root, context \\ 30, partition \\ "train-clean-100", augment \\ true) do
+    acc = %AudioDataset{
+      context: context,
+      phonemes: Globals.phonemes(),
+      augment: augment,
+      mfccs: %{},
+      transcripts: %{},
+      index_mapping: nil,
+      length: 0,
+      total: 0
+    }
+
+    acc = ingest_partition(acc, root, context, partition)
+
+    %{acc | length: Map.keys(acc.mfccs) |> Enum.count()}
+  end
+
+  def len(dataset), do: dataset.length
+
+  def get_item(dataset, ind) do
+    line = locate_line(dataset.index_mapping, ind)
+
+    actual_index = case line do 
+      0 -> ind + @max_context
+      _n -> ind - FastArray.get(dataset.index_mapping, line - 1) + @max_context
+    end
+    
+    before_context = dataset.context
+    after_context = dataset.context
+
+    lower_offset = actual_index - before_context
+    upper_offset = actual_index + after_context + 1
+    
+    frames = Map.get(dataset.mfccs, line)
+
+    frames = Nx.slice(frames, [lower_offset, 0], [
+          upper_offset - lower_offset,
+          28
+        ])
+
+    phoneme_line = Map.get(dataset.transcripts, line)
+    phoneme = Nx.slice(phoneme_line, [actual_index - @max_context], [1])
+
+    {frames, phoneme}
+  end
+
+  def collate(dataset, batch) do 
+
+    {batch_size, height, width} = Nx.shape(batch)
+
+    batch = case dataset.augment do 
+      true -> AudioTransforms.freq_time_masking_transform(batch)
+      _ -> batch 
+    end
+
+    Nx.reshape(batch, {batch_size, height * width})
+  end
+
+  # Helper function to find the correct line
+  defp locate_line(index_mapping, ind) do
+    FastArray.bisect_right(index_mapping, ind)
+  end
+
+end
+
+
+```
+
+## DataLoader
+
+```elixir
+
+defmodule DataLoader do
+  @moduledoc """
+  A DataLoader module for asynchronously fetching and processing dataset batches.
+
+  Supports asychronous processing with specified number of worker 
+  """
+
+  defstruct [:dataset_module, :dataset, :batch_size, :num_workers, :shuffle, :subset]
+
+  # Create a new DataLoader with a dataset, batch size, and number of async workers
+  def new(dataset_module, dataset, opts \\ []) do
+    # Set default values for options
+    opts = Keyword.merge([batch_size: 32, num_workers: 4, shuffle: true, subset: 0], opts)
+
+    %DataLoader{
+      dataset_module: dataset_module,
+      dataset: dataset,
+      batch_size: Keyword.get(opts, :batch_size),
+      num_workers: Keyword.get(opts, :num_workers),
+      shuffle: Keyword.get(opts, :shuffle),
+      subset: Keyword.get(opts, :subset),
+    }
+  end
+
+  # Public function to return a stream of batches
+  def data(%DataLoader{dataset_module: dataset_module, dataset: dataset, 
+    batch_size: batch_size, num_workers: num_workers, subset: subset, shuffle: shuffle}) do
+    
+    # Create a list of batch indices, subset and sort if needed
+    indices = 0..(dataset.total - 1)
+
+    indices = case subset do 
+      0 -> indices
+      n -> Enum.take_every(indices, n)
+    end
+    
+    indices = if shuffle do Enum.shuffle(indices) else shuffle end
+
+    # Support async processing by a number of workers, or synchronous
+    # when num_workers is 0.  Syncrhonous is helpful for debugging.
+    case num_workers do 
+      0 -> 
+        Stream.chunk_every(indices, batch_size, batch_size, :discard)
+        |> Stream.map(fn batch -> prepare_batch(dataset_module, dataset, batch) end)
+        
+      n -> 
+        Stream.chunk_every(indices, batch_size, batch_size, :discard)
+        |> Task.async_stream(fn batch -> prepare_batch(dataset_module, dataset, batch) end, max_concurrency: n, ordered: !shuffle, timeout: :infinity)
+        |> Stream.map(fn
+          {:ok, result} -> result  # Extract the result from the {:ok, result} tuple
+          {:error, _reason} -> raise "Task failed"  # Optional: Handle errors if needed
+        end)
+        
+    end
+
+  end
+
+  defp prepare_batch(dataset_module, dataset, batch_indices) do 
+
+    # Map the indices that we need for this batch to 
+    # frame and phoneme tuples, unzipping them to rearrange
+    # as a tuple of two separate lists
+    {x, y} = batch_indices
+    |> Enum.map(fn idx -> apply(dataset_module, :get_item, [dataset, idx]) end)
+    |> Enum.unzip()
+
+    # Collate the batch and move it to the GPU
+    batch_x = apply(dataset_module, :collate, [dataset, Nx.stack(x)])
+    |> Nx.backend_transfer(EXLA.Backend)
+
+    # Stack the y tensors and move to GPU
+    batch_y = Nx.stack(y)
+    |> Nx.backend_transfer(EXLA.Backend)
+          
+    {batch_x, batch_y}
+  end
+end
+```
+
+```elixir
+
+train_data_set = AudioDataset.new("#{config.data_root}/data", config.context, "train-clean-100", true)
+IO.inspect("Train dataset loaded, #{train_data_set.length} mfccs, #{train_data_set.total} samples")
+
+dev_data_set = AudioDataset.new("#{config.data_root}/data", config.context, "dev-clean", false)
+IO.inspect("Train dataset loaded, #{dev_data_set.length} mfccs, #{dev_data_set.total} samples")
+
+train_data_loader = DataLoader.new(AudioDataset, train_data_set, batch_size: config.batch_size, num_workers: 8)
+dev_data_loader = DataLoader.new(AudioDataset, dev_data_set, batch_size: config.batch_size, num_workers: 8)
+
+
+
+```
+
+## Model Definition
+
+```elixir
+defmodule Model do 
+
+  def tiny(input_size, output_size) do 
+    
+    Axon.input("data", shape: {nil, input_size})
+    |> linear(512)
+    |> Axon.batch_norm()
+    |> Axon.gelu()
+    |> Axon.dropout(rate: 0.35)
+    
+    |> linear(512)
+    |> Axon.gelu()
+    |> Axon.dropout(rate: 0.3)
+    
+    |> linear(512)
+    |> Axon.batch_norm()
+    |> Axon.gelu()
+    |> Axon.dropout(rate: 0.25)
+  
+    |> Axon.dense(output_size, activation: :softmax)
+  
+  end
+  
+  def full(input_size, output_size) do 
+    
+    Axon.input("data", shape: {nil, input_size})
+    |> linear(2048)
+    |> Axon.batch_norm()
+    |> Axon.gelu()
+    |> Axon.dropout(rate: 0.35)
+    
+    |> linear(2048)
+    |> Axon.gelu()
+    |> Axon.dropout(rate: 0.3)
+    
+    |> linear(2048)
+    |> Axon.batch_norm()
+    |> Axon.gelu()
+    |> Axon.dropout(rate: 0.25)
+  
+    |> linear(2048)
+    |> Axon.gelu()
+    |> Axon.dropout(rate: 0.2)
+    
+    |> linear(1024)
+    |> Axon.batch_norm()
+    |> Axon.gelu()
+    |> Axon.dropout(rate: 0.15)
+  
+    |> linear(512)
+    |> Axon.gelu()
+    |> Axon.dropout(rate: 0.1)
+  
+    |> linear(256)
+    |> Axon.batch_norm()
+    |> Axon.gelu()
+    |> Axon.dropout(rate: 0.05)
+  
+    |> Axon.dense(output_size, activation: :softmax)
+  
+  end
+
+  defp linear(model, size) do 
+    Axon.dense(model, size,
+       kernel_initializer: Axon.Initializers.glorot_uniform(),
+       bias_initializer: Axon.Initializers.zeros()
+     )
+  end
+
+  def summarize(model, input_size) do 
+    Axon.Display.as_graph(model, Nx.template({1, input_size}, :f32))
+  end
+  
+end
+
+input_size = (2 * config.context + 1) * 28
+output_size = Enum.count(Globals.phonemes())
+
+model = Model.full(input_size, output_size)
+#Model.summarize(model, input_size)
+
+{init_fn, pred_fn} = Axon.build(model)
+
+
+```
+
+## Training
+
+```elixir
+eval_loop = Axon.Loop.evaluator(model)
+  |> Axon.Loop.metric(:accuracy, "accuracy")
+
+Nx.global_default_backend(EXLA.Backend)
+
+{train_data_loader, dev_data_loader} = Data.get(config)
+  
+run_eval = fn state ->
+  model_state = state.step_state.model_state
+  eval_accuracy = Axon.Loop.run(eval_loop, DataLoader.data(dev_data_loader), model_state)
+  IO.inspect(eval_accuracy)
+  {:continue, state}
+end
+  
+# Define the training loop
+trainer_loop = 
+  Axon.Loop.trainer(model, :categorical_cross_entropy, Polaris.Optimizers.adamw())
+  |> Axon.Loop.metric(:accuracy, "accuracy")
+  #|> Axon.Loop.handle_event(:epoch_completed, run_eval)
+  |> Axon.Loop.run(DataLoader.data(train_data_loader), %{}, epochs: config.epochs, compiler: EXLA)
+
+#first_batch = Enum.at(images, 0)
+```
+
+<!-- livebook:{"attrs":"e30","chunks":[[0,290],[292,691]],"kind":"Elixir.KinoBumblebee.TaskCell","livebook_object":"smart_cell"} -->
+
+```elixir
+{:ok, model_info} = Bumblebee.load_model({:hf, "microsoft/resnet-50"})
+{:ok, featurizer} = Bumblebee.load_featurizer({:hf, "microsoft/resnet-50"})
+
+serving =
+  Bumblebee.Vision.image_classification(model_info, featurizer,
+    compile: [batch_size: 1],
+    defn_options: [compiler: EXLA]
+  )
+
+image_input = Kino.Input.image("Image", size: {224, 224})
+form = Kino.Control.form([image: image_input], submit: "Run")
+frame = Kino.Frame.new()
+
+Kino.listen(form, fn %{data: %{image: image}} ->
+  if image do
+    Kino.Frame.render(frame, Kino.Text.new("Running..."))
+
+    image =
+      image.file_ref
+      |> Kino.Input.file_path()
+      |> File.read!()
+      |> Nx.from_binary(:u8)
+      |> Nx.reshape({image.height, image.width, 3})
+
+    output = Nx.Serving.run(serving, image)
+
+    output.predictions
+    |> Enum.map(&{&1.label, &1.score})
+    |> Kino.Bumblebee.ScoredList.new()
+    |> then(&Kino.Frame.render(frame, &1))
+  end
+end)
+
+Kino.Layout.grid([form, frame], boxed: true, gap: 16)
+```
