@@ -10,7 +10,8 @@ Mix.install(
     {:kino, "~> 0.7.0"},
     {:finch, "~> 0.19.0"},
     {:jason, "~> 1.4"},
-    {:polaris, "~> 0.1.0"}
+    {:polaris, "~> 0.1.0"},
+    {:eflame, "~> 1.0"}
   ],
   config: [nx: [default_backend: EXLA.Backend]]
 )
@@ -24,8 +25,8 @@ config = %{
   context: 30,
   epochs: 5,
   batch_size: 1024,
-  data_root: "/home/livebook"
-  #data_root: "/Users/darren"
+  #data_root: "/home/livebook"
+  data_root: "/Users/darren/dev/11785-project"
 }
 ```
 
@@ -34,10 +35,10 @@ config = %{
 The `RawData` module retrieves and unpacks the MFCC and transcripts raw data.  There were a 
 collection of challenges in getting the Kaggle data available in an Elixir LiveBook:
 
-1. There is no simple method for downloading the Kaggle data for a competition from their site. They have a python `kaggle-api`, but lack a simple HTTP endpoint that one couse use to issue a `GET` request to download a competition `.zip` file.  Instead, I uploaded a copy of the kaggle data to a person S3 bucket that I had already created (for hosting a course project for a French course that I took a few years ago at CMU)
+1. There is no simple method for downloading the Kaggle data for a competition from their site. They have a python `kaggle-api`, but lack a simple HTTP endpoint that one could use to issue a `GET` request to download a competition `.zip` file.  Instead, I uploaded a copy of the kaggle data to a person S3 bucket that I had already created (for hosting a course project for a French course that I took a few years ago at CMU)
 2. When running a LiveBook on a remote Elixir node on Fly.io, I could not successfully unzip
    the Kaggle data zip file.  The builtin Erlang unzip `:erlang.unzip` would raise an error complaining that the zip file was invalid.  To circumvent this, I created a `.tar.gz` representation that was able to be unpacked on the remote server
-3. Finally, I ran into problems using Elixir's built support for reading `.npy` files via `Nx.load_numpy!/1`.  While I could use that function to read the MFCC data files, it would
+3. Finally, I ran into problems using Elixir's built in support for reading `.npy` files via `Nx.load_numpy!/1`.  While I could use that function to read the MFCC data files, it would
    raise an error when attempting to read the transcript files.  These files encoded the
    transcript data as numpy arrays of strings, but the `Nx` Elixir library only supports
    loading Numpy numerical arrays.  To work around this, I wrote a small python script to
@@ -304,6 +305,37 @@ transforms during a `collate` function (called by the DataLoader).
 A key challenge here is the runtime of the `ingest_partition`.  On my local dev machine (Macbook Pro, Apple Silocon, SSD) I can read in both the train and dev partitions in around 100 seconds. On a remote Fly.io machine (4 performance CPUs, 32 GB ram), this takes closer to 1500 seconds.
 
 ```elixir
+defmodule FlameGraph do
+  @stack_files_dir "_flame_graph_stacks"
+  @svg_dir "./"
+  @url_base "./flame_graphs"
+
+  def create(func, tag) do
+    File.mkdir(@stack_files_dir)
+    filename = "#{@stack_files_dir}/#{tag}.out"
+    :eflame.apply(:normal_with_children, filename, func, [])
+  end
+
+  def list() do
+    Path.wildcard("#{@stack_files_dir}/*.out")
+  end
+
+  def to_svg(stack_filename) do
+    File.mkdir(@svg_dir)
+
+    svg_filename = Path.basename(stack_filename, ".out") <> ".svg"
+
+    "deps/eflame/stack_to_flame.sh < #{stack_filename} > #{@svg_dir}/#{svg_filename}"
+    |> String.to_charlist()
+    |> :os.cmd()
+
+    "#{@url_base}/#{svg_filename}"
+  end
+end
+
+```
+
+```elixir
 
 defmodule AudioDataset do
   
@@ -411,8 +443,9 @@ defmodule AudioDataset do
   def len(dataset), do: dataset.length
 
   def get_item(dataset, ind) do
+    
     line = locate_line(dataset.index_mapping, ind)
-
+    
     actual_index = case line do 
       0 -> ind + @max_context
       _n -> ind - FastArray.get(dataset.index_mapping, line - 1) + @max_context
@@ -425,7 +458,7 @@ defmodule AudioDataset do
     upper_offset = actual_index + after_context + 1
     
     frames = Map.get(dataset.mfccs, line)
-
+    
     frames = Nx.slice(frames, [lower_offset, 0], [
           upper_offset - lower_offset,
           28
@@ -494,17 +527,16 @@ defmodule DataLoader do
   # Public function to return a stream of batches
   def data(%DataLoader{dataset_module: dataset_module, dataset: dataset, 
     batch_size: batch_size, num_workers: num_workers, subset: subset, shuffle: shuffle}) do
-    
+
     # Create a list of batch indices, subset and sort if needed
     indices = 0..(dataset.total - 1)
-
     indices = case subset do 
       0 -> indices
       n -> Enum.take_every(indices, n)
     end
-    
-    indices = if shuffle do Enum.shuffle(indices) else shuffle end
 
+    indices = if shuffle do Enum.shuffle(indices) else shuffle end
+    
     # Support async processing by a number of workers, or synchronous
     # when num_workers is 0.  Syncrhonous is helpful for debugging.
     case num_workers do 
@@ -541,8 +573,8 @@ defmodule DataLoader do
     batch_y = Nx.stack(y)
     |> Nx.backend_transfer(EXLA.Backend)
           
-    {batch_x, batch_y}
-  end
+    {batch_x, batch_y} end, String.to_atom("#{:rand.uniform()}"))
+
 end
 ```
 
@@ -559,6 +591,14 @@ dev_data_loader = DataLoader.new(AudioDataset, dev_data_set, batch_size: config.
 
 
 
+```
+
+```elixir
+Enum.take(DataLoader.data(train_data_loader), 1)
+```
+
+```elixir
+FlameGraph.to_svg("/Users/darren/_flame_graph_stacks/test.out")
 ```
 
 ## Model Definition
