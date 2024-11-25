@@ -3,6 +3,7 @@
 ```elixir
 Mix.install(
   [
+    {:arrays, "~> 2.1"},
     {:exla, ">= 0.0.0"},
     {:npy, "~> 0.1.1"},
     {:axon, "~> 0.7.0"},
@@ -25,8 +26,8 @@ config = %{
   context: 30,
   epochs: 5,
   batch_size: 1024,
-  #data_root: "/home/livebook"
-  data_root: "/Users/darren/dev/11785-project"
+  data_root: "/home/livebook"
+  #data_root: "/Users/darren/dev/11785-project"
 }
 ```
 
@@ -143,64 +144,6 @@ end
 ## Utilities
 
 Elixir does not have a random access data structure like a python array, instead it has an immutable list.  This was going to create a performance problem in my dataset implementation where I needed to perform a binary search to determine which individual mfcc file an index would be found in.  To avoid this, I wrote `FastArray`, an `Nx` backed fixed size array implementation, which provides support for fast, random access, upon which I replicated python's `bisect_right` function.
-
-```elixir
-defmodule FastArray do
-  @moduledoc """
-  A module that provides a fast, fixed-size array backed by a 1D Nx
-  """
-
-  defstruct [:storage, :type]
-
-  # Create a new LongArray of the given size and default value.
-  @spec new(pos_integer(), integer()) :: %__MODULE__{}
-  def new(size, default_value, type \\ {:s, 64}) when is_integer(default_value) and is_integer(size) and size > 0 do
-    
-    default_value_tensor = Nx.tensor(default_value, type: type)  # Create a tensor with the appropriate type
-     
-    %__MODULE__{
-      storage: Nx.broadcast(default_value_tensor, {size}) ,
-      type: type
-    }
-  end
-
-  # Get the value at the specified index
-  def get(tensor, index) when is_integer(index) and index >= 0 do
-    tensor.storage
-    |> Nx.slice([index], [1])  # Slice out one element starting at `index`
-    |> Nx.to_flat_list()        # Convert the slice to a flat list
-    |> hd()    
-  end
-
-  # Put a value into the specified index
-  def put(%__MODULE__{storage: storage, type: type} = fast_array, index, value) when is_integer(index) and index >= 0 do
-    storage = Nx.put_slice(storage, [index], Nx.tensor([value], type: type))
-    %{fast_array | storage: storage}
-  end
-
-  # Bisect right function - find the insertion point to maintain sorted order
-  def bisect_right(%FastArray{storage: tensor}, value) do
-    size = Nx.size(tensor)  # Get the size of the tensor
-    bisect_right_helper(tensor, value, 0, size - 1)
-  end
-
-  # Recursive helper function for bisect_right
-  defp bisect_right_helper(tensor, value, low, high) when low <= high do
-    mid = div(low + high, 2)
-    mid_value = get(%FastArray{storage: tensor}, mid)
-
-    cond do
-      mid_value <= value -> bisect_right_helper(tensor, value, mid + 1, high)
-      true -> bisect_right_helper(tensor, value, low, mid - 1)
-    end
-  end
-
-  defp bisect_right_helper(_, _, low, _), do: low
-  
-end
-
-
-```
 
 ## Transformations
 
@@ -367,22 +310,8 @@ defmodule AudioDataset do
     Nx.tensor(Nx.broadcast(0.0, {@max_context, 28}), type: :f32)
   end
 
-  # Pad the input array on both sides with padding
-  defp pad(arr, context) do
-    padding = padding(context)
-    Nx.concatenate([padding, arr, padding])
-  end
-
-  # Add MFCC data to dataset, padding it appropriately
-  defp add(i, data, context, total, acc) do
-    length = Nx.shape(data) |> elem(0)
-    padded = pad(data, context)
-
-    %{acc | mfccs: Map.put(acc.mfccs, i, padded), total: total + length}
-  end
-
   # Ingest a partition of MFCC and transcript data
-  defp ingest_partition(acc, root, context, partition) do
+  defp ingest_partition(acc, root, _context, partition) do
     mfcc_dir = Path.join([root, partition, "mfcc"])
     transcript_dir = Path.join([root, partition, "transcript"])
 
@@ -396,10 +325,8 @@ defmodule AudioDataset do
       raise "Mismatch between MFCC and transcript counts"
     end
 
-    index_mapping = FastArray.new(length(mfcc_names), 0)
-
-    Enum.with_index(mfcc_names)
-    |> Task.async_stream(fn {mfcc_path, i} ->
+    Enum.take(mfcc_names, 1000)
+    |> Task.async_stream(fn mfcc_path ->
       mfcc = read_file(mfcc_path)
       mfcc = AudioTransforms.cepstral_mean_transform(mfcc)
     
@@ -407,16 +334,18 @@ defmodule AudioDataset do
       transcript = read_file(transcript_path)
       transcript = Nx.slice(transcript, [1], [Nx.size(transcript) - 2])
     
-      {i, mfcc, transcript}
+      {mfcc, transcript}
       
     end, max_concurrency: System.schedulers_online() * 2, ordered: true)  
-    |> Enum.reduce(acc, fn {:ok, {i, mfcc, transcript}}, acc ->
-      acc = add(i, mfcc, context, acc.total, acc)
-    
+    |> Enum.reduce(acc, fn {:ok, {mfcc, transcript}}, acc ->
+
+      {_freq, length} = Nx.shape(mfcc)
+      mfccs = [mfcc | acc.mfccs]
+      transcripts = [transcript | acc.transcripts]
+      
       %{
         acc
-        | transcripts: Map.put(acc.transcripts, i, transcript),
-          index_mapping: FastArray.put(index_mapping, i, acc.total)
+        | transcripts: transcripts, mfccs: mfccs, total: acc.total + length
       }
     end)
 
@@ -428,28 +357,31 @@ defmodule AudioDataset do
       context: context,
       phonemes: Globals.phonemes(),
       augment: augment,
-      mfccs: %{},
-      transcripts: %{},
-      index_mapping: nil,
+      mfccs: [],
+      transcripts: [],
+      index_mapping: Arrays.new([]),
       length: 0,
       total: 0
     }
 
     acc = ingest_partition(acc, root, context, partition)
 
-    %{acc | length: Map.keys(acc.mfccs) |> Enum.count()}
+    mfccs = Enum.reverse(acc.mfccs)
+    transcripts = Enum.reverse(acc.transcripts)
+
+    mfccs = Nx.concatenate(mfccs)
+    transcripts = Nx.concatenate(transcripts)
+
+    mfccs = Nx.concatenate([padding(context), mfccs, padding(context)])
+    
+    %{acc | mfccs: mfccs, transcripts: transcripts}
   end
 
-  def len(dataset), do: dataset.length
+  def len(dataset), do: dataset.total
 
   def get_item(dataset, ind) do
     
-    line = locate_line(dataset.index_mapping, ind)
-    
-    actual_index = case line do 
-      0 -> ind + @max_context
-      _n -> ind - FastArray.get(dataset.index_mapping, line - 1) + @max_context
-    end
+    actual_index = ind + @max_context
     
     before_context = dataset.context
     after_context = dataset.context
@@ -457,15 +389,12 @@ defmodule AudioDataset do
     lower_offset = actual_index - before_context
     upper_offset = actual_index + after_context + 1
     
-    frames = Map.get(dataset.mfccs, line)
-    
-    frames = Nx.slice(frames, [lower_offset, 0], [
+    frames = Nx.slice(dataset.mfccs, [lower_offset, 0], [
           upper_offset - lower_offset,
           28
         ])
 
-    phoneme_line = Map.get(dataset.transcripts, line)
-    phoneme = Nx.slice(phoneme_line, [actual_index - @max_context], [1])
+    phoneme = Nx.slice(dataset.transcripts, [actual_index - @max_context], [1])
 
     {frames, phoneme}
   end
@@ -480,11 +409,6 @@ defmodule AudioDataset do
     end
 
     Nx.reshape(batch, {batch_size, height * width})
-  end
-
-  # Helper function to find the correct line
-  defp locate_line(index_mapping, ind) do
-    FastArray.bisect_right(index_mapping, ind)
   end
 
 end
@@ -573,8 +497,8 @@ defmodule DataLoader do
     batch_y = Nx.stack(y)
     |> Nx.backend_transfer(EXLA.Backend)
           
-    {batch_x, batch_y} end, String.to_atom("#{:rand.uniform()}"))
-
+    {batch_x, batch_y} 
+  end
 end
 ```
 
@@ -584,21 +508,13 @@ train_data_set = AudioDataset.new("#{config.data_root}/data", config.context, "t
 IO.inspect("Train dataset loaded, #{train_data_set.length} mfccs, #{train_data_set.total} samples")
 
 dev_data_set = AudioDataset.new("#{config.data_root}/data", config.context, "dev-clean", false)
-IO.inspect("Train dataset loaded, #{dev_data_set.length} mfccs, #{dev_data_set.total} samples")
+IO.inspect("Dev dataset loaded, #{dev_data_set.length} mfccs, #{dev_data_set.total} samples")
 
 train_data_loader = DataLoader.new(AudioDataset, train_data_set, batch_size: config.batch_size, num_workers: 8)
 dev_data_loader = DataLoader.new(AudioDataset, dev_data_set, batch_size: config.batch_size, num_workers: 8)
 
 
 
-```
-
-```elixir
-Enum.take(DataLoader.data(train_data_loader), 1)
-```
-
-```elixir
-FlameGraph.to_svg("/Users/darren/_flame_graph_stacks/test.out")
 ```
 
 ## Model Definition
@@ -698,7 +614,7 @@ eval_loop = Axon.Loop.evaluator(model)
 
 Nx.global_default_backend(EXLA.Backend)
 
-{train_data_loader, dev_data_loader} = Data.get(config)
+# {train_data_loader, dev_data_loader} = Data.get(config)
   
 run_eval = fn state ->
   model_state = state.step_state.model_state
