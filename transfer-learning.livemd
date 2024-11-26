@@ -1,4 +1,4 @@
-# Image Accessibility
+# Image Classification
 
 ```elixir
 Mix.install(
@@ -8,35 +8,49 @@ Mix.install(
     {:axon, "~> 0.7.0"},
     {:table_rex, "~> 3.1.1"},
     {:polaris, "~> 0.1.0"},
-    {:evision, "~> 0.2.9"}
+    {:evision, "~> 0.2.9"},
+    {:ex_aws, "~> 2.2"},
+    {:ex_aws_s3, "~> 2.3"},
+    {:hackney, "~> 1.17"}
   ],
   config: [nx: [default_backend: EXLA.Backend]]
 )
 ```
 
-## Section
+## Configuration
+
+Here we set up some familiar configuration values to drive our implementation.  The `data_root` directory value of `/home/livebook` is required to correctly map to the default
+volume of a remote Fly.io machine running LiveBook.
 
 ```elixir
 config = %{
-  epochs: 500,
+  epochs: 10,
   batch_size: 1,
-  data_root: "/home/livebook"
-  #data_root: "/Users/darren/dev/11785-project"
+  data_root: "/home/livebook",
+  #data_root: "/Users/darren/dev/11785-project",
+  bucket: "siegel-xapi-dev"
 }
 ```
+
+Definition of the labels for the classes that we will attempt to classify between.
+
+* "table": images which contain screenshots of tabular information
+* "code": images which contain screenshots of source code
+* "other": images which are *not* in either of the first two classes
 
 ```elixir
 defmodule ClassificationLabels do 
   @labels [
     "table",
     "other",
-    "text",
     "code"
   ]
   def get(), do: @labels
 end
 
 ```
+
+
 
 ```elixir
 defmodule ResNet do 
@@ -56,7 +70,7 @@ defmodule ResNet do
     
     spec = Bumblebee.configure(spec, num_labels: num_labels, id_to_label: id_to_label)
     {:ok, model_info} = Bumblebee.load_model({:hf, "microsoft/resnet-50"}, spec: spec)
-    
+    IO.inspect(model_info)
     model_info
   end
 end
@@ -74,15 +88,20 @@ defmodule RawData do
   end
 
   defp download(config) do 
+    
     url = "https://s3.amazonaws.com/votre-montreal.com/images.tar.gz"
     destination = "#{config.data_root}/images.tar.gz"
 
     #{_, exit_status} = System.cmd("curl", ["-o", destination, url])
+
+      
     {_, exit_status} = System.cmd("wget", [url, "-O", destination])
-    
+
     if exit_status == 0 do
+      
       :ok
     else
+      IO.inspect(exit_status)
       :error
     end
   end
@@ -94,6 +113,7 @@ defmodule RawData do
     if exit_status == 0 do
       :ok
     else
+      IO.inspect(exit_status)
       :error
     end
   end
@@ -133,14 +153,7 @@ defmodule ImageLoader do
           image_path = Path.join(label_path, image_file)
           
           # Load the image and resize to 224x224
-          image = Evision.imread(image_path)
-          resized_image = Evision.resize(image, @image_size)
-
-          # Convert the image to Nx tensor and normalize it
-          Nx.from_binary(Evision.Mat.to_binary(resized_image), {:u, 8})
-          |> Nx.reshape({@image_size |> elem(0), @image_size |> elem(1), 3})
-          |> Nx.divide(255.0)  # Scale pixel values from [0, 255] to [0, 1]
-          |> normalize_image()
+          image_from_path(image_path)
         end)
 
 
@@ -149,7 +162,18 @@ defmodule ImageLoader do
     end)
   end
 
-  def train_val_split({images, labels}, train_pct \\ 0.5) do 
+  def image_from_path(path) do 
+    image = Evision.imread(path)
+    resized_image = Evision.resize(image, @image_size)
+
+    # Convert the image to Nx tensor and normalize it
+    Nx.from_binary(Evision.Mat.to_binary(resized_image), {:u, 8})
+    |> Nx.reshape({@image_size |> elem(0), @image_size |> elem(1), 3})
+    |> Nx.divide(255.0)  # Scale pixel values from [0, 255] to [0, 1]
+    |> normalize_image()
+  end
+
+  def train_val_split({images, labels}, train_pct \\ 0.9) do 
 
     count_to_take = (Enum.count(images) * train_pct) |> trunc
     
@@ -161,7 +185,7 @@ defmodule ImageLoader do
   end
 
   # Function to normalize image based on mean and std for each channel
-  defp normalize_image(image_tensor) do
+  def normalize_image(image_tensor) do
     mean_tensor = Nx.tensor(@mean, backend: Nx.BinaryBackend)
     std_tensor = Nx.tensor(@std, backend: Nx.BinaryBackend)
 
@@ -193,7 +217,7 @@ defmodule Trainer do
     dev_batches = create_batches(config, dev_data)
 
     # The model is already loaded, we just configure the optimizer, loss, and metrics
-    optimizer = Polaris.Optimizers.sgd(learning_rate: 1.0e-1)
+    optimizer = Polaris.Optimizers.sgd(learning_rate: 1.0e-2)
     
     loss_fn = fn targets, preds ->
       Axon.Losses.categorical_cross_entropy(
@@ -264,4 +288,85 @@ IO.inspect(Enum.count(images))
 Trainer.train_model(config, train_data, dev_data, model_info)
 
 
+```
+
+```elixir
+# Save the model to disk, but most importantly to an S3 bucket
+
+defmodule ModelPersistence do 
+
+  def save(model_info, bucket) do 
+        
+    params = model_info.params
+    
+    serialized_params = Nx.serialize(params, [])
+    File.write!("model.axon", serialized_params)
+    
+    # Reload it from the file
+    read_file = File.read!("model.axon") 
+    
+    # Fetch the AWS key and secret
+    aws_access_key_id = System.fetch_env!("LB_AWS_ACCESS_KEY_ID")
+    aws_secret_access_key = System.fetch_env!("LB_AWS_SECRET_ACCESS_KEY")
+    
+    # Configure ExAws
+    aws_config = %{
+      access_key_id: aws_access_key_id,
+      secret_access_key: aws_secret_access_key,
+      region: "us-east-1" # Change the region to your preference
+    }
+    
+    # Set the configuration for ExAws
+    Application.put_env(:ex_aws, :access_key_id, aws_config[:access_key_id])
+    Application.put_env(:ex_aws, :secret_access_key, aws_config[:secret_access_key])
+    Application.put_env(:ex_aws, :region, aws_config[:region])
+    
+    ExAws.S3.put_object(bucket, "model.axon", read_file)
+    |> ExAws.request()
+  end
+
+end
+
+ModelPersistence.save(model_info, config.bucket)
+
+```
+
+```elixir
+image_input = Kino.Input.image("Image", size: {224, 224}, format: :jpg)
+form = Kino.Control.form([image: image_input], submit: "Run")
+frame = Kino.Frame.new()
+
+params = model_info.params 
+model = model_info.model
+
+Kino.listen(form, fn %{data: %{image: image}} ->
+  if image do
+    Kino.Frame.render(frame, Kino.Text.new("Running..."))
+
+    batched_image =
+      image.file_ref
+      |> Kino.Input.file_path()
+      |> ImageLoader.image_from_path()
+      |> Nx.new_axis(0)
+
+    
+    logits = Axon.predict(model, params, batched_image).logits
+
+    softmax = fn t -> 
+      exp_tensor = Nx.exp(t)
+      sum_exp = Nx.sum(exp_tensor, axes: [-1], keep_axes: true)
+      Nx.divide(exp_tensor, sum_exp)
+    end
+
+    # Apply softmax to logits
+    probabilities = softmax.(logits) |> Nx.to_flat_list()
+
+    items = Enum.zip(probabilities, ClassificationLabels.get())
+    
+    IO.inspect(items)
+    #Kino.HTML.new("<ul>#{items}</ul>")
+  end
+end)
+
+Kino.Layout.grid([form, frame], boxed: true, gap: 16)
 ```

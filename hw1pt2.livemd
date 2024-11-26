@@ -92,6 +92,10 @@ RawData.ensure_available(config)
 ```
 
 ```elixir
+Nx.Defn.global_default_options(compiler: EXLA)
+```
+
+```elixir
 defmodule Globals do 
   def phonemes(), do: [
     "[SIL]",
@@ -325,7 +329,7 @@ defmodule AudioDataset do
       raise "Mismatch between MFCC and transcript counts"
     end
 
-    Enum.take(mfcc_names, 1000)
+    Enum.take(mfcc_names, 2700)
     |> Task.async_stream(fn mfcc_path ->
       mfcc = read_file(mfcc_path)
       mfcc = AudioTransforms.cepstral_mean_transform(mfcc)
@@ -465,8 +469,8 @@ defmodule DataLoader do
     # when num_workers is 0.  Syncrhonous is helpful for debugging.
     case num_workers do 
       0 -> 
-        Stream.chunk_every(indices, batch_size, batch_size, :discard)
-        |> Stream.map(fn batch -> prepare_batch(dataset_module, dataset, batch) end)
+        Enum.chunk_every(indices, batch_size, batch_size, :discard)
+        |> Enum.map(fn batch -> prepare_batch(dataset_module, dataset, batch) end)
         
       n -> 
         Stream.chunk_every(indices, batch_size, batch_size, :discard)
@@ -504,14 +508,14 @@ end
 
 ```elixir
 
-train_data_set = AudioDataset.new("#{config.data_root}/data", config.context, "train-clean-100", true)
+train_data_set = AudioDataset.new("#{config.data_root}/data", config.context, "train-clean-100", false)
 IO.inspect("Train dataset loaded, #{train_data_set.length} mfccs, #{train_data_set.total} samples")
 
 dev_data_set = AudioDataset.new("#{config.data_root}/data", config.context, "dev-clean", false)
 IO.inspect("Dev dataset loaded, #{dev_data_set.length} mfccs, #{dev_data_set.total} samples")
 
-train_data_loader = DataLoader.new(AudioDataset, train_data_set, batch_size: config.batch_size, num_workers: 8)
-dev_data_loader = DataLoader.new(AudioDataset, dev_data_set, batch_size: config.batch_size, num_workers: 8)
+train_data_loader = DataLoader.new(AudioDataset, train_data_set, batch_size: config.batch_size, num_workers: 0)
+dev_data_loader = DataLoader.new(AudioDataset, dev_data_set, batch_size: config.batch_size, num_workers: 0)
 
 
 
@@ -612,7 +616,7 @@ model = Model.full(input_size, output_size)
 eval_loop = Axon.Loop.evaluator(model)
   |> Axon.Loop.metric(:accuracy, "accuracy")
 
-Nx.global_default_backend(EXLA.Backend)
+Nx.global_default_backend({EXLA.Backend, client: :cuda})
 
 # {train_data_loader, dev_data_loader} = Data.get(config)
   
@@ -628,7 +632,7 @@ trainer_loop =
   Axon.Loop.trainer(model, :categorical_cross_entropy, Polaris.Optimizers.adamw())
   |> Axon.Loop.metric(:accuracy, "accuracy")
   #|> Axon.Loop.handle_event(:epoch_completed, run_eval)
-  |> Axon.Loop.run(DataLoader.data(train_data_loader), %{}, epochs: config.epochs, compiler: EXLA)
+  |> Axon.Loop.run(DataLoader.data(train_data_loader), %{}, epochs: config.epochs, compiler: EXLA, client: :cuda)
 
 #first_batch = Enum.at(images, 0)
 ```
