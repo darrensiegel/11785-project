@@ -36,11 +36,11 @@ config = %{
 The `RawData` module retrieves and unpacks the MFCC and transcripts raw data.  There were a 
 collection of challenges in getting the Kaggle data available in an Elixir LiveBook:
 
-1. There is no simple method for downloading the Kaggle data for a competition from their site. They have a python `kaggle-api`, but lack a simple HTTP endpoint that one could use to issue a `GET` request to download a competition `.zip` file.  Instead, I uploaded a copy of the kaggle data to a person S3 bucket that I had already created (for hosting a course project for a French course that I took a few years ago at CMU)
+1. There is seemingly no simple method for downloading the Kaggle data for a competition from their site. They have a python `kaggle-api`, but lack an unsecured HTTP endpoint that one could use to issue a `GET` request to download a competition `.zip` file.  Instead, I uploaded a copy of the kaggle data to a personal S3 bucket that I had already created (for hosting a course project for a French course that I took a few years ago at CMU!)
 2. When running a LiveBook on a remote Elixir node on Fly.io, I could not successfully unzip
-   the Kaggle data zip file.  The builtin Erlang unzip `:erlang.unzip` would raise an error complaining that the zip file was invalid.  To circumvent this, I created a `.tar.gz` representation that was able to be unpacked on the remote server
+   the Kaggle data zip file.  The builtin Erlang unzip `:erlang.unzip` would raise an error complaining that the zip file was invalid.  To circumvent this, I instead created a `.tar.gz` representation of the data that was able to be unpacked on the remote server.
 3. Finally, I ran into problems using Elixir's built in support for reading `.npy` files via `Nx.load_numpy!/1`.  While I could use that function to read the MFCC data files, it would
-   raise an error when attempting to read the transcript files.  These files encoded the
+   raise an error when attempting to read the transcript files.  It turns out that these files in the Kaggle dataset encoded the
    transcript data as numpy arrays of strings, but the `Nx` Elixir library only supports
    loading Numpy numerical arrays.  To work around this, I wrote a small python script to
    rewrite these transcript files to be integer numpy arrays, with the integer being the
@@ -89,6 +89,8 @@ end
 RawData.ensure_available(config)
 
 ```
+
+This sets the `Nx` setting to allow all tensors to move to the GPU (if one is available)
 
 ```elixir
 Nx.Defn.global_default_options(compiler: EXLA)
@@ -242,7 +244,10 @@ An implementation of a dataset for MFCC audio data.
 This generally mimics what I did in HW1PT2, with some additional enhancements for performing batch
 transforms during a `collate` function (called by the DataLoader).
 
-A key challenge here is the runtime of the `ingest_partition`.  On my local dev machine (Macbook Pro, Apple Silocon, SSD) I can read in both the train and dev partitions in around 100 seconds. On a remote Fly.io machine (4 performance CPUs, 32 GB ram), this takes closer to 1500 seconds.
+One challenge here was the runtime of the `ingest_partition`.  On my local dev machine (Macbook Pro, Apple Silocon, SSD) I can read in both the train and dev partitions in around 100 seconds. On a remote Fly.io machine (4 performance CPUs, 32 GB ram), this originally took closer to 1500 seconds.  I added in some concurrent processing via `Task.async_stream` (line 48) and was able to reduce the runtime closer to 300 seconds.
+
+The most significant challenge, however, was the complete lack of support for constant time, random access data structures in Elixir.  My HW1PT2 impl in Python used a binary search (via `bisect.bisect_right`) to determine the in memory location of the requested index in the `__getitem__` method of the Dataset.   Replicating this approach in Elixir was impossible due to the runtime characteristics of Elixir lists.  In Elixir, lists are immutable singly-linked lists - therefore random element access is `O(n)`.  I experimented with other, third-party libraries that emulate a list but provide `O(log n)` guarantees for random element access.  Even with that approach, creating batches of phonemes was too expensive to even start to train the model. The
+best that I could do was to eliminate the context padding of each MFCC file, and concatenate them all together.  Even with this approach, I was never able to complete a single training epoch, given that the runtime per epoch is seemingly in order of "hours" long.
 
 ```elixir
 
