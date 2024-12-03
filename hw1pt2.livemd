@@ -26,8 +26,8 @@ config = %{
   context: 30,
   epochs: 5,
   batch_size: 1024,
-  data_root: "/home/livebook"
-  #data_root: "/Users/darren/dev/11785-project"
+  #data_root: "/home/livebook"
+  data_root: "/Users/darren/dev/11785-project"
 }
 ```
 
@@ -62,9 +62,8 @@ defmodule RawData do
     url = "https://s3.amazonaws.com/votre-montreal.com/data.tar.gz"
     destination = "#{config.data_root}/data.tar.gz"
 
-    #{_, exit_status} = System.cmd("curl", ["-o", destination, url])
-
-      
+    # {_, exit_status} = System.cmd("curl", ["-o", destination, url])
+ 
     {_, exit_status} = System.cmd("wget", [url, "-O", destination])
     
     if exit_status == 0 do
@@ -145,10 +144,6 @@ end
 
 ```
 
-## Utilities
-
-Elixir does not have a random access data structure like a python array, instead it has an immutable list.  This was going to create a performance problem in my dataset implementation where I needed to perform a binary search to determine which individual mfcc file an index would be found in.  To avoid this, I wrote `FastArray`, an `Nx` backed fixed size array implementation, which provides support for fast, random access, upon which I replicated python's `bisect_right` function.
-
 ## Transformations
 
 Here I have replicated the two transformation that I used in HW1PT2: the cepstral mean transform and a combined time and frequency masking transform.
@@ -192,9 +187,7 @@ defmodule Masks do
     mask_slice = Nx.slice(mask, [t0_value, 0], [t_value, elem(mask_shape, 1)])
   
     # Subtract the slice from the mask, effectively zeroing out that portion
-    mask = Nx.put_slice(mask, [t0_value, 0], Nx.multiply(mask_slice, Nx.tensor(0.0)))
-  
-    mask
+    Nx.put_slice(mask, [t0_value, 0], Nx.multiply(mask_slice, Nx.tensor(0.0)))
   end
 
 end
@@ -252,37 +245,6 @@ transforms during a `collate` function (called by the DataLoader).
 A key challenge here is the runtime of the `ingest_partition`.  On my local dev machine (Macbook Pro, Apple Silocon, SSD) I can read in both the train and dev partitions in around 100 seconds. On a remote Fly.io machine (4 performance CPUs, 32 GB ram), this takes closer to 1500 seconds.
 
 ```elixir
-defmodule FlameGraph do
-  @stack_files_dir "_flame_graph_stacks"
-  @svg_dir "./"
-  @url_base "./flame_graphs"
-
-  def create(func, tag) do
-    File.mkdir(@stack_files_dir)
-    filename = "#{@stack_files_dir}/#{tag}.out"
-    :eflame.apply(:normal_with_children, filename, func, [])
-  end
-
-  def list() do
-    Path.wildcard("#{@stack_files_dir}/*.out")
-  end
-
-  def to_svg(stack_filename) do
-    File.mkdir(@svg_dir)
-
-    svg_filename = Path.basename(stack_filename, ".out") <> ".svg"
-
-    "deps/eflame/stack_to_flame.sh < #{stack_filename} > #{@svg_dir}/#{svg_filename}"
-    |> String.to_charlist()
-    |> :os.cmd()
-
-    "#{@url_base}/#{svg_filename}"
-  end
-end
-
-```
-
-```elixir
 
 defmodule AudioDataset do
   
@@ -320,6 +282,7 @@ defmodule AudioDataset do
     transcript_dir = Path.join([root, partition, "transcript"])
 
     mfcc_names = Path.wildcard(Path.join(mfcc_dir, "*.npy"))
+
     transcript_names = Path.wildcard(Path.join(transcript_dir, "*.npy"))
 
     if length(mfcc_names) != length(transcript_names) do
@@ -329,8 +292,7 @@ defmodule AudioDataset do
       raise "Mismatch between MFCC and transcript counts"
     end
 
-    Enum.take(mfcc_names, 2700)
-    |> Task.async_stream(fn mfcc_path ->
+   Task.async_stream(mfcc_names, fn mfcc_path ->
       mfcc = read_file(mfcc_path)
       mfcc = AudioTransforms.cepstral_mean_transform(mfcc)
     
@@ -424,7 +386,7 @@ end
 
 A DataLoader implementation which supports arbitrary batch size, asynchronous processing via a number of background "workers" and optional shuffling and data subseting.
 
-Here we see the power of the Elixir/Erlang concurrency model in action.  It takes 1 line of code to turn this serial, synchronous data loader into a much more performant concurrent implementation.  The call to `Task.async_stream` with the `:max_concurrency` option set our desired *number of workers* gives us a remarkably simple yet performant equivalent to Python's `DataLoader`
+Here we see the power of the Elixir/Erlang concurrency model in action.  It takes 1 line of code to turn this serial, synchronous data loader into a more performant concurrent implementation.  The call to `Task.async_stream` with the `:max_concurrency` option set our desired *number of workers* gives us a remarkably simple yet performant equivalent to Python's `DataLoader`
 
 ```elixir
 
@@ -514,7 +476,7 @@ IO.inspect("Train dataset loaded, #{train_data_set.length} mfccs, #{train_data_s
 dev_data_set = AudioDataset.new("#{config.data_root}/data", config.context, "dev-clean", false)
 IO.inspect("Dev dataset loaded, #{dev_data_set.length} mfccs, #{dev_data_set.total} samples")
 
-train_data_loader = DataLoader.new(AudioDataset, train_data_set, batch_size: config.batch_size, num_workers: 0)
+train_data_loader = DataLoader.new(AudioDataset, train_data_set, batch_size: config.batch_size, num_workers: 16)
 dev_data_loader = DataLoader.new(AudioDataset, dev_data_set, batch_size: config.batch_size, num_workers: 0)
 
 
@@ -602,11 +564,13 @@ end
 input_size = (2 * config.context + 1) * 28
 output_size = Enum.count(Globals.phonemes())
 
+
 model = Model.full(input_size, output_size)
-#Model.summarize(model, input_size)
 
 {init_fn, pred_fn} = Axon.build(model)
 
+
+Model.summarize(model, input_size)
 
 ```
 
@@ -618,8 +582,6 @@ eval_loop = Axon.Loop.evaluator(model)
 
 Nx.global_default_backend({EXLA.Backend, client: :cuda})
 
-# {train_data_loader, dev_data_loader} = Data.get(config)
-  
 run_eval = fn state ->
   model_state = state.step_state.model_state
   eval_accuracy = Axon.Loop.run(eval_loop, DataLoader.data(dev_data_loader), model_state)
@@ -631,8 +593,41 @@ end
 trainer_loop = 
   Axon.Loop.trainer(model, :categorical_cross_entropy, Polaris.Optimizers.adamw())
   |> Axon.Loop.metric(:accuracy, "accuracy")
-  #|> Axon.Loop.handle_event(:epoch_completed, run_eval)
+  |> Axon.Loop.handle_event(:epoch_completed, run_eval)
   |> Axon.Loop.run(DataLoader.data(train_data_loader), %{}, epochs: config.epochs, compiler: EXLA, client: :cuda)
 
-#first_batch = Enum.at(images, 0)
+
+```
+
+The `FlameGraph` module was used to profile the runtime of the `DataSet` and 
+`DataLoader`.
+
+```elixir
+defmodule FlameGraph do
+  @stack_files_dir "_flame_graph_stacks"
+  @svg_dir "./"
+  @url_base "./flame_graphs"
+
+  def create(func, tag) do
+    File.mkdir(@stack_files_dir)
+    filename = "#{@stack_files_dir}/#{tag}.out"
+    :eflame.apply(:normal_with_children, filename, func, [])
+  end
+
+  def list() do
+    Path.wildcard("#{@stack_files_dir}/*.out")
+  end
+
+  def to_svg(stack_filename) do
+    File.mkdir(@svg_dir)
+
+    svg_filename = Path.basename(stack_filename, ".out") <> ".svg"
+
+    "deps/eflame/stack_to_flame.sh < #{stack_filename} > #{@svg_dir}/#{svg_filename}"
+    |> String.to_charlist()
+    |> :os.cmd()
+
+    "#{@url_base}/#{svg_filename}"
+  end
+end
 ```

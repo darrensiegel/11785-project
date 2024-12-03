@@ -11,7 +11,8 @@ Mix.install(
     {:evision, "~> 0.2.9"},
     {:ex_aws, "~> 2.2"},
     {:ex_aws_s3, "~> 2.3"},
-    {:hackney, "~> 1.17"}
+    {:hackney, "~> 1.17"},
+    {:table_rex, "~> 3.1.1"}
   ],
   config: [nx: [default_backend: EXLA.Backend]]
 )
@@ -24,7 +25,7 @@ volume of a remote Fly.io machine running LiveBook.
 
 ```elixir
 config = %{
-  epochs: 10,
+  epochs: 50,
   batch_size: 1,
   data_root: "/home/livebook",
   #data_root: "/Users/darren/dev/11785-project",
@@ -76,6 +77,10 @@ defmodule ResNet do
 end
 ```
 
+## Raw Data
+
+This allows the downloading and untaring of the fine tuning image dataset.
+
 ```elixir
 defmodule RawData do 
 
@@ -123,8 +128,15 @@ end
 RawData.ensure_available(config)
 ```
 
-```elixir
+## Image Loader
 
+The `ImageLoader` module reads all labeleed image files from disk and can split them
+into train and validation data sets.
+
+The `Evision` library is used to load and resize the images, but basic `Nx` commands
+are used to rescale and normalize the images in the data sets.
+
+```elixir
 defmodule ImageLoader do
   @image_size {224, 224}
   @mean [0.485, 0.456, 0.406]
@@ -196,8 +208,6 @@ defmodule ImageLoader do
   
 end
 
-
-
 ```
 
 ```elixir
@@ -268,8 +278,8 @@ end
 ```elixir
 # Load the pretrained ResNet, but for classification for our labels
 model_info = ClassificationLabels.get() |> ResNet.model_for()
-# = Nx.template({16, 224, 224, 3}, :f32)
-#Axon.Display.as_graph(model_info.model, t)
+t = Nx.template({16, 224, 224, 3}, :f32)
+# Axon.Display.as_graph(model_info.model, t)
 ```
 
 ```elixir
