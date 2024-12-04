@@ -1,3 +1,5 @@
+<!-- livebook:{"file_entries":[{"name":"profiling.png","type":"attachment"}]} -->
+
 # 11785 - HW1PT2
 
 ```elixir
@@ -16,7 +18,6 @@ Mix.install(
   ],
   config: [nx: [default_backend: EXLA.Backend]]
 )
-
 ```
 
 ## Configuration
@@ -25,9 +26,9 @@ Mix.install(
 config = %{
   context: 30,
   epochs: 5,
-  batch_size: 1024,
-  #data_root: "/home/livebook"
-  data_root: "/Users/darren/dev/11785-project"
+  batch_size: 512,
+  data_root: "/home/livebook"
+  #data_root: "/Users/darren/dev/11785-project"
 }
 ```
 
@@ -47,25 +48,23 @@ collection of challenges in getting the Kaggle data available in an Elixir LiveB
    index of the phoneme (from the list of phonemes).
 
 ```elixir
-
-defmodule RawData do 
-
-  def ensure_available(config) do 
-    if File.exists?("#{config.data_root}/data") do 
+defmodule RawData do
+  def ensure_available(config) do
+    if File.exists?("#{config.data_root}/data") do
       :exists
     else
       download(config) |> untar(config)
     end
   end
 
-  defp download(config) do 
+  defp download(config) do
     url = "https://s3.amazonaws.com/votre-montreal.com/data.tar.gz"
     destination = "#{config.data_root}/data.tar.gz"
 
     # {_, exit_status} = System.cmd("curl", ["-o", destination, url])
- 
+
     {_, exit_status} = System.cmd("wget", [url, "-O", destination])
-    
+
     if exit_status == 0 do
       :ok
     else
@@ -74,8 +73,9 @@ defmodule RawData do
   end
 
   defp untar(:error, _), do: :error
-  defp untar(:ok, config) do 
-    {_, exit_status} = System.cmd("tar", ["-xzvf",  "#{config.data_root}/data.tar.gz"])
+
+  defp untar(:ok, config) do
+    {_, exit_status} = System.cmd("tar", ["-xzvf", "#{config.data_root}/data.tar.gz"])
 
     if exit_status == 0 do
       :ok
@@ -83,11 +83,9 @@ defmodule RawData do
       :error
     end
   end
-
 end
 
 RawData.ensure_available(config)
-
 ```
 
 This sets the `Nx` setting to allow all tensors to move to the GPU (if one is available)
@@ -97,53 +95,53 @@ Nx.Defn.global_default_options(compiler: EXLA)
 ```
 
 ```elixir
-defmodule Globals do 
-  def phonemes(), do: [
-    "[SIL]",
-    "AA",
-    "AE",
-    "AH",
-    "AO",
-    "AW",
-    "AY",
-    "B",
-    "CH",
-    "D",
-    "DH",
-    "EH",
-    "ER",
-    "EY",
-    "F",
-    "G",
-    "HH",
-    "IH",
-    "IY",
-    "JH",
-    "K",
-    "L",
-    "M",
-    "N",
-    "NG",
-    "OW",
-    "OY",
-    "P",
-    "R",
-    "S",
-    "SH",
-    "T",
-    "TH",
-    "UH",
-    "UW",
-    "V",
-    "W",
-    "Y",
-    "Z",
-    "ZH",
-    "[SOS]",
-    "[EOS]"
-  ]
+defmodule Globals do
+  def phonemes(),
+    do: [
+      "[SIL]",
+      "AA",
+      "AE",
+      "AH",
+      "AO",
+      "AW",
+      "AY",
+      "B",
+      "CH",
+      "D",
+      "DH",
+      "EH",
+      "ER",
+      "EY",
+      "F",
+      "G",
+      "HH",
+      "IH",
+      "IY",
+      "JH",
+      "K",
+      "L",
+      "M",
+      "N",
+      "NG",
+      "OW",
+      "OY",
+      "P",
+      "R",
+      "S",
+      "SH",
+      "T",
+      "TH",
+      "UH",
+      "UW",
+      "V",
+      "W",
+      "Y",
+      "Z",
+      "ZH",
+      "[SOS]",
+      "[EOS]"
+    ]
 end
-
 ```
 
 ## Transformations
@@ -152,50 +150,47 @@ Here I have replicated the two transformation that I used in HW1PT2: the cepstra
 
 ```elixir
 defmodule Masks do
-  
   def freq(mask, low \\ 0.0, high \\ 28.0, f \\ 4) do
     # Randomly choose f between 3 and F
     f_value = :rand.uniform() * (f - 3.0) + 3.0
     f_value = Float.floor(f_value) |> trunc()
-  
+
     # Randomly choose the starting frequency
     f0_value = :rand.uniform() * (high - f_value - low) + low
     f0_value = Float.floor(f0_value) |> trunc()
-  
+
     # Create the zero mask along the frequency dimension
     mask_shape = Nx.shape(mask)
     mask_slice = Nx.slice(mask, [0, f0_value], [elem(mask_shape, 0), f_value])
-  
+
     # Subtract the slice from the mask, effectively zeroing out that portion
     mask = Nx.put_slice(mask, [0, f0_value], Nx.multiply(mask_slice, Nx.tensor(0.0)))
-  
+
     mask
   end
 
   def time(mask, f \\ 8) do
     # Get the number of time steps (rows)
     num_time_steps = Nx.shape(mask) |> elem(0)
-  
+
     # Randomly choose t between 3 and F
     t_value = :rand.uniform() * (f - 3.0) + 3.0
     t_value = Float.floor(t_value) |> trunc()
-  
+
     # Randomly choose the starting time step
     t0_value = :rand.uniform() * (num_time_steps - t_value)
     t0_value = Float.floor(t0_value) |> trunc()
-  
+
     # Create the zero mask along the time dimension
     mask_shape = Nx.shape(mask)
     mask_slice = Nx.slice(mask, [t0_value, 0], [t_value, elem(mask_shape, 1)])
-  
+
     # Subtract the slice from the mask, effectively zeroing out that portion
     Nx.put_slice(mask, [t0_value, 0], Nx.multiply(mask_slice, Nx.tensor(0.0)))
   end
-
 end
 
 defmodule AudioTransforms do
- 
   # Function to apply the cepstral mean and variance normalization
   def cepstral_mean_transform(data) do
     # Calculate the mean along axis 0 (mean for each column)
@@ -214,27 +209,25 @@ defmodule AudioTransforms do
   def freq_time_masking_transform(batch) do
     # Get the shape of a single entry in the batch (2D tensor)
     {batch_size, height, width} = Nx.shape(batch)
-  
+
     # Create an initial mask of ones with shape (height, width) for a single entry
     mask = Nx.broadcast(Nx.tensor(1.0), {height, width})
-  
+
     # Apply 0, 1, or 2 random frequency transformations
     num_freq_xforms = :rand.uniform(3) - 1
     mask = Enum.reduce(1..num_freq_xforms, mask, fn _, mask_acc -> Masks.freq(mask_acc) end)
-  
+
     # Apply 0, 1, or 2 random time transformations
     num_time_xforms = :rand.uniform(3) - 1
     mask = Enum.reduce(1..num_time_xforms, mask, fn _, mask_acc -> Masks.time(mask_acc) end)
-  
+
     # Broadcast the 2D mask to match the batch size (apply to every 2D tensor in the batch)
     broadcasted_mask = Nx.broadcast(mask, {batch_size, height, width})
-  
+
     # Apply the broadcasted mask to the batch (element-wise multiplication)
     Nx.multiply(batch, broadcasted_mask)
   end
-  
 end
-
 ```
 
 ## DataSets
@@ -250,9 +243,7 @@ The most significant challenge, however, was the complete lack of support for co
 best that I could do was to eliminate the context padding of each MFCC file, and concatenate them all together.  Even with this approach, I was never able to complete a single training epoch, given that the runtime per epoch is seemingly in order of "hours" long.
 
 ```elixir
-
 defmodule AudioDataset do
-  
   @moduledoc """
   A dataset module for ingesting and padding MFCC data.
   """
@@ -293,33 +284,37 @@ defmodule AudioDataset do
     if length(mfcc_names) != length(transcript_names) do
       IO.inspect(length(mfcc_names))
       IO.inspect(length(transcript_names))
-      
+
       raise "Mismatch between MFCC and transcript counts"
     end
 
-   Task.async_stream(mfcc_names, fn mfcc_path ->
-      mfcc = read_file(mfcc_path)
-      mfcc = AudioTransforms.cepstral_mean_transform(mfcc)
-    
-      transcript_path = Path.join(transcript_dir, Path.basename(mfcc_path))
-      transcript = read_file(transcript_path)
-      transcript = Nx.slice(transcript, [1], [Nx.size(transcript) - 2])
-    
-      {mfcc, transcript}
-      
-    end, max_concurrency: System.schedulers_online() * 2, ordered: true)  
-    |> Enum.reduce(acc, fn {:ok, {mfcc, transcript}}, acc ->
+    Enum.take(mfcc_names, 2500)
+    |> Task.async_stream(
+      fn mfcc_path ->
+        mfcc = read_file(mfcc_path)
+        mfcc = AudioTransforms.cepstral_mean_transform(mfcc)
 
+        transcript_path = Path.join(transcript_dir, Path.basename(mfcc_path))
+        transcript = read_file(transcript_path)
+        transcript = Nx.slice(transcript, [1], [Nx.size(transcript) - 2])
+
+        {mfcc, transcript}
+      end,
+      max_concurrency: System.schedulers_online() * 2,
+      ordered: true
+    )
+    |> Enum.reduce(acc, fn {:ok, {mfcc, transcript}}, acc ->
       {_freq, length} = Nx.shape(mfcc)
       mfccs = [mfcc | acc.mfccs]
       transcripts = [transcript | acc.transcripts]
-      
+
       %{
         acc
-        | transcripts: transcripts, mfccs: mfccs, total: acc.total + length
+        | transcripts: transcripts,
+          mfccs: mfccs,
+          total: acc.total + length
       }
     end)
-
   end
 
   # Initialize the dataset with the specified partitions
@@ -344,47 +339,44 @@ defmodule AudioDataset do
     transcripts = Nx.concatenate(transcripts)
 
     mfccs = Nx.concatenate([padding(context), mfccs, padding(context)])
-    
+
     %{acc | mfccs: mfccs, transcripts: transcripts}
   end
 
   def len(dataset), do: dataset.total
 
   def get_item(dataset, ind) do
-    
     actual_index = ind + @max_context
-    
+
     before_context = dataset.context
     after_context = dataset.context
 
     lower_offset = actual_index - before_context
     upper_offset = actual_index + after_context + 1
-    
-    frames = Nx.slice(dataset.mfccs, [lower_offset, 0], [
-          upper_offset - lower_offset,
-          28
-        ])
+
+    frames =
+      Nx.slice(dataset.mfccs, [lower_offset, 0], [
+        upper_offset - lower_offset,
+        28
+      ])
 
     phoneme = Nx.slice(dataset.transcripts, [actual_index - @max_context], [1])
 
     {frames, phoneme}
   end
 
-  def collate(dataset, batch) do 
-
+  def collate(dataset, batch) do
     {batch_size, height, width} = Nx.shape(batch)
 
-    batch = case dataset.augment do 
-      true -> AudioTransforms.freq_time_masking_transform(batch)
-      _ -> batch 
-    end
+    batch =
+      case dataset.augment do
+        true -> AudioTransforms.freq_time_masking_transform(batch)
+        _ -> batch
+      end
 
     Nx.reshape(batch, {batch_size, height * width})
   end
-
 end
-
-
 ```
 
 ## DataLoader
@@ -394,7 +386,6 @@ A DataLoader implementation which supports arbitrary batch size, asynchronous pr
 Here we see the power of the Elixir/Erlang concurrency model in action.  It takes 1 line of code to turn this serial, synchronous data loader into a more performant concurrent implementation.  The call to `Task.async_stream` with the `:max_concurrency` option set our desired *number of workers* gives us a remarkably simple yet performant equivalent to Python's `DataLoader`
 
 ```elixir
-
 defmodule DataLoader do
   @moduledoc """
   A DataLoader module for asynchronously fetching and processing dataset batches.
@@ -415,174 +406,177 @@ defmodule DataLoader do
       batch_size: Keyword.get(opts, :batch_size),
       num_workers: Keyword.get(opts, :num_workers),
       shuffle: Keyword.get(opts, :shuffle),
-      subset: Keyword.get(opts, :subset),
+      subset: Keyword.get(opts, :subset)
     }
   end
 
   # Public function to return a stream of batches
-  def data(%DataLoader{dataset_module: dataset_module, dataset: dataset, 
-    batch_size: batch_size, num_workers: num_workers, subset: subset, shuffle: shuffle}) do
-
+  def data(%DataLoader{
+        dataset_module: dataset_module,
+        dataset: dataset,
+        batch_size: batch_size,
+        num_workers: num_workers,
+        subset: subset,
+        shuffle: shuffle
+      }) do
     # Create a list of batch indices, subset and sort if needed
     indices = 0..(dataset.total - 1)
-    indices = case subset do 
-      0 -> indices
-      n -> Enum.take_every(indices, n)
-    end
 
-    indices = if shuffle do Enum.shuffle(indices) else shuffle end
-    
+    indices =
+      case subset do
+        0 -> indices
+        n -> Enum.take_every(indices, n)
+      end
+
+    indices =
+      if shuffle do
+        Enum.shuffle(indices)
+      else
+        shuffle
+      end
+
     # Support async processing by a number of workers, or synchronous
     # when num_workers is 0.  Syncrhonous is helpful for debugging.
-    case num_workers do 
-      0 -> 
+    case num_workers do
+      0 ->
         Enum.chunk_every(indices, batch_size, batch_size, :discard)
         |> Enum.map(fn batch -> prepare_batch(dataset_module, dataset, batch) end)
-        
-      n -> 
-        Stream.chunk_every(indices, batch_size, batch_size, :discard)
-        |> Task.async_stream(fn batch -> prepare_batch(dataset_module, dataset, batch) end, max_concurrency: n, ordered: !shuffle, timeout: :infinity)
-        |> Stream.map(fn
-          {:ok, result} -> result  # Extract the result from the {:ok, result} tuple
-          {:error, _reason} -> raise "Task failed"  # Optional: Handle errors if needed
-        end)
-        
-    end
 
+      n ->
+        Stream.chunk_every(indices, batch_size, batch_size, :discard)
+        |> Task.async_stream(fn batch -> prepare_batch(dataset_module, dataset, batch) end,
+          max_concurrency: n,
+          ordered: !shuffle,
+          timeout: :infinity
+        )
+        |> Stream.map(fn
+          # Extract the result from the {:ok, result} tuple
+          {:ok, result} -> result
+          # Optional: Handle errors if needed
+          {:error, _reason} -> raise "Task failed"
+        end)
+    end
   end
 
-  defp prepare_batch(dataset_module, dataset, batch_indices) do 
-
+  defp prepare_batch(dataset_module, dataset, batch_indices) do
     # Map the indices that we need for this batch to 
     # frame and phoneme tuples, unzipping them to rearrange
     # as a tuple of two separate lists
-    {x, y} = batch_indices
-    |> Enum.map(fn idx -> apply(dataset_module, :get_item, [dataset, idx]) end)
-    |> Enum.unzip()
+    {x, y} =
+      batch_indices
+      |> Enum.map(fn idx -> apply(dataset_module, :get_item, [dataset, idx]) end)
+      |> Enum.unzip()
 
     # Collate the batch and move it to the GPU
-    batch_x = apply(dataset_module, :collate, [dataset, Nx.stack(x)])
-    |> Nx.backend_transfer(EXLA.Backend)
+    batch_x =
+      apply(dataset_module, :collate, [dataset, Nx.stack(x)])
+      |> Nx.backend_transfer(EXLA.Backend)
 
     # Stack the y tensors and move to GPU
-    batch_y = Nx.stack(y)
-    |> Nx.backend_transfer(EXLA.Backend)
-          
-    {batch_x, batch_y} 
+    batch_y =
+      Nx.stack(y)
+      |> Nx.backend_transfer(EXLA.Backend)
+
+    {batch_x, batch_y}
   end
 end
 ```
 
 ```elixir
+train_data_set =
+  AudioDataset.new("#{config.data_root}/data", config.context, "train-clean-100", false)
 
-train_data_set = AudioDataset.new("#{config.data_root}/data", config.context, "train-clean-100", false)
-IO.inspect("Train dataset loaded, #{train_data_set.length} mfccs, #{train_data_set.total} samples")
+IO.inspect(
+  "Train dataset loaded, #{train_data_set.length} mfccs, #{train_data_set.total} samples"
+)
 
 dev_data_set = AudioDataset.new("#{config.data_root}/data", config.context, "dev-clean", false)
 IO.inspect("Dev dataset loaded, #{dev_data_set.length} mfccs, #{dev_data_set.total} samples")
 
-train_data_loader = DataLoader.new(AudioDataset, train_data_set, batch_size: config.batch_size, num_workers: 16)
-dev_data_loader = DataLoader.new(AudioDataset, dev_data_set, batch_size: config.batch_size, num_workers: 0)
+train_data_loader =
+  DataLoader.new(AudioDataset, train_data_set, batch_size: config.batch_size, num_workers: 16)
 
-
-
+dev_data_loader =
+  DataLoader.new(AudioDataset, dev_data_set, batch_size: config.batch_size, num_workers: 0)
 ```
 
 ## Model Definition
 
 ```elixir
-defmodule Model do 
-
-  def tiny(input_size, output_size) do 
-    
+defmodule Model do
+  def tiny(input_size, output_size) do
     Axon.input("data", shape: {nil, input_size})
     |> linear(512)
     |> Axon.batch_norm()
     |> Axon.gelu()
     |> Axon.dropout(rate: 0.35)
-    
     |> linear(512)
     |> Axon.gelu()
     |> Axon.dropout(rate: 0.3)
-    
     |> linear(512)
     |> Axon.batch_norm()
     |> Axon.gelu()
     |> Axon.dropout(rate: 0.25)
-  
     |> Axon.dense(output_size, activation: :softmax)
-  
   end
-  
-  def full(input_size, output_size) do 
-    
+
+  def full(input_size, output_size) do
     Axon.input("data", shape: {nil, input_size})
     |> linear(2048)
     |> Axon.batch_norm()
     |> Axon.gelu()
     |> Axon.dropout(rate: 0.35)
-    
     |> linear(2048)
     |> Axon.gelu()
     |> Axon.dropout(rate: 0.3)
-    
     |> linear(2048)
     |> Axon.batch_norm()
     |> Axon.gelu()
     |> Axon.dropout(rate: 0.25)
-  
     |> linear(2048)
     |> Axon.gelu()
     |> Axon.dropout(rate: 0.2)
-    
     |> linear(1024)
     |> Axon.batch_norm()
     |> Axon.gelu()
     |> Axon.dropout(rate: 0.15)
-  
     |> linear(512)
     |> Axon.gelu()
     |> Axon.dropout(rate: 0.1)
-  
     |> linear(256)
     |> Axon.batch_norm()
     |> Axon.gelu()
     |> Axon.dropout(rate: 0.05)
-  
     |> Axon.dense(output_size, activation: :softmax)
-  
   end
 
-  defp linear(model, size) do 
+  defp linear(model, size) do
     Axon.dense(model, size,
-       kernel_initializer: Axon.Initializers.glorot_uniform(),
-       bias_initializer: Axon.Initializers.zeros()
-     )
+      kernel_initializer: Axon.Initializers.glorot_uniform(),
+      bias_initializer: Axon.Initializers.zeros()
+    )
   end
 
-  def summarize(model, input_size) do 
+  def summarize(model, input_size) do
     Axon.Display.as_graph(model, Nx.template({1, input_size}, :f32))
   end
-  
 end
 
 input_size = (2 * config.context + 1) * 28
 output_size = Enum.count(Globals.phonemes())
 
-
 model = Model.full(input_size, output_size)
 
 {init_fn, pred_fn} = Axon.build(model)
 
-
 Model.summarize(model, input_size)
-
 ```
 
 ## Training
 
 ```elixir
-eval_loop = Axon.Loop.evaluator(model)
+eval_loop =
+  Axon.Loop.evaluator(model)
   |> Axon.Loop.metric(:accuracy, "accuracy")
 
 Nx.global_default_backend({EXLA.Backend, client: :cuda})
@@ -593,15 +587,17 @@ run_eval = fn state ->
   IO.inspect(eval_accuracy)
   {:continue, state}
 end
-  
+
 # Define the training loop
-trainer_loop = 
+trainer_loop =
   Axon.Loop.trainer(model, :categorical_cross_entropy, Polaris.Optimizers.adamw())
   |> Axon.Loop.metric(:accuracy, "accuracy")
   |> Axon.Loop.handle_event(:epoch_completed, run_eval)
-  |> Axon.Loop.run(DataLoader.data(train_data_loader), %{}, epochs: config.epochs, compiler: EXLA, client: :cuda)
-
-
+  |> Axon.Loop.run(DataLoader.data(train_data_loader), %{},
+    epochs: config.epochs,
+    compiler: EXLA,
+    client: :cuda
+  )
 ```
 
 The `FlameGraph` module was used to profile the runtime of the `DataSet` and 
@@ -636,3 +632,44 @@ defmodule FlameGraph do
   end
 end
 ```
+
+With the above flame graph generation module, I profiled the runtime of the original DataLoader collation.  The runtime was dominated by the calls to `bisect_right` as it binary searched through a large `Nx` array in order to find the correct MFCC
+file for the given absolute index.
+
+<!-- livebook:{"break_markdown":true} -->
+
+![](files/profiling.png)
+
+## Results / Commentary
+
+Pros:
+
+1. Livebook's direct support for deploying and running on a  Fly.io GPU is fantastic.  I rarely had to wait more than 10 seconds to obtain a machine with a high end GPU.
+
+2. The `Axon` library syntax is pleasant to work with and
+   to read.  The pipe operator `|>` seems a natural way to
+   express the flow of data through the components and layers
+   of a network.
+
+Cons:
+
+1. Lack of a data structure with constant time
+   access to random elements has posed an insurmountable challenge. (The built in `list` in Elixir is a single linked list with `O(n)` element access) Even third-party libraries with "fast array" support offer only
+   `O(log n)` random access - which also wasn't efficient enough
+   to allow random batches to be collated.  Even at a tiny
+   batch size of `16`, the projected time to train 1 single
+   epoch of the full training data set is on the order of days.
+
+2. Livebook is still immature, and clearly has bugs.  Numerous times I faced problems with cells re-running automatically
+   when they didn't need to be (this was problematic when the cell
+   was reloading the entire dataset). I also encountered strange
+   code editing phenemona, with my cursor seemingly jumping to other
+   positions, backspace refusing to delete characters, etc.
+
+## Takeaways
+
+While it was a fun and interesting experience building out HW1PT2 entirely in Elixir, it is clear that the ecosystem isn't at
+a place where even moderate scale model training can be easily done.
+
+The Python Deep Learning stack, with its assuredly tens and tens of thousands more engineering hours behind it, is simply more 
+robust, more feature rich and more battle tested.
