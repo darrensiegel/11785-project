@@ -660,16 +660,14 @@ Cons:
    batch size of `16`, the projected time to train 1 single
    epoch of the full training data set is on the order of days.
 
-2. Livebook is still immature, and clearly has bugs.  Numerous times I faced problems with cells re-running automatically
+2. There is no support for Wandb, Kaggle, and Google Drive mounting.  This makes doing serious DL work difficult.
+
+3. Livebook is still immature, and clearly has bugs.  Numerous times I faced problems with cells re-running automatically
    when they didn't need to be (this was problematic when the cell
    was reloading the entire dataset). I also encountered strange
    code editing phenemona, with my cursor seemingly jumping to other
    positions, backspace refusing to delete characters, etc.
 
-## Takeaways
+<!-- livebook:{"break_markdown":true} -->
 
-While it was a fun and interesting experience building out HW1PT2 entirely in Elixir, it is clear that the ecosystem isn't at
-a place where even moderate scale model training can be easily done.
 
-The Python Deep Learning stack, with its assuredly tens and tens of thousands more engineering hours behind it, is simply more 
-robust, more feature rich and more battle tested.

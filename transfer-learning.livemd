@@ -91,7 +91,7 @@ end
 
 ## Raw Data
 
-This allows the downloading and untaring of the fine tuning image dataset.
+I handcrafted an image dataset consisting of around 130 examples for each of the three classes. I archived that dataset in an S3 bucket. This module allows the downloading and untaring of the image dataset.
 
 ```elixir
 defmodule RawData do
@@ -350,15 +350,19 @@ IO.inspect(Enum.count(images))
 
 This initiates the training loop.
 
-I ran this many different times with different learning rates, different number of epochs, and
+I ran this numerous times with different learning rates, different number of epochs, and
 with and without freezing the weights of the underlying ResNet.
 
-The best training run yielded a validation score of 85.2441%.  I saved this model and pushed
-it to S3 with the `ModelPersistence` model below.
+The best training run (without freezing the params, SGD at 1e-3) yielded train of 74% and validation of 76%. I stopped it after 11 epochs as I feared it was about to start to overfit. I saved this model and pushed it to S3 with the `ModelPersistence` model below.
 
 ```elixir
 # Train the model
 Trainer.train_model(config, train_data, dev_data, model_info)
+```
+
+```
+Epoch: 11, Batch: 0, TRAIN accuracy: 0.74030461932262534 
+Batch: 4, VAL accuracy: 0.76150209234934002
 ```
 
 ```elixir

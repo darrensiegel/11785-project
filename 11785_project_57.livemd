@@ -1,4 +1,4 @@
-# 11785 Project 57
+# 11785 Project 57 - Darren Siegel
 
 ```elixir
 Mix.install(
@@ -17,7 +17,7 @@ Mix.install(
 
 ## Project Goal
 
-### Assess whether recent advancements in the **Elixir programming language** ecosystem make it a viable alternative to Python for Deep Learning
+Assess whether recent advancements in the **Elixir programming language** ecosystem make it a viable alternative to Python for Deep Learning
 
 > Elixir: A functional programming language that runs on the Erlang VM, known for its concurrency, fault tolerance and ease of distributed computing
 > 
@@ -32,44 +32,14 @@ Mix.install(
 The production system: `Torus` (https://github.com/Simon-Initiative/oli-torus), an open source,
 course authoring and delivery system developed here at CMU.
 
-## A Taste of Elixir
+<!-- livebook:{"break_markdown":true} -->
 
-Here we spawn 10,000 Erlang processes to automatically run over all avaiable CPUs, then send a message back (the result of the computation) to our host process.
-
-```elixir
-parallel_map = fn collection, func ->
-  Enum.map(collection, fn item -> Task.async(fn -> func.(item) end) end)
-  |> Enum.map(&Task.await(&1))
-end
-
-parallel_map.(1..10_000, fn i -> i ** 3 end)
-```
-
-### Recent Elixir Advancements
+### Recent Elixir Advancements (since 2021)
 
 * `Nx` - GPU accelerated tensor library
 * `Axon` - Neural network model creation and training
 * `Bumblebee` - Pretrained model access
 * `Livebook` - Jupyter Notebook for Elixir
-
-## Nx
-
-```elixir
-import Nx
-
-# 1. Create tensors
-a = Nx.tensor([[1, 2, 3], [1, 2, 3]])
-b = Nx.tensor([[4, 5, 6], [7, 8, 9]])
-
-# 2. Basic element-wise operations
-# Add 1 to each element in `a`
-c = Nx.add(a, 1)
-# Multiply each element in `a` by 2
-d = Nx.multiply(a, 2)
-
-# 3. Matrix multiplication
-e = Nx.multiply(a, b)
-```
 
 ## Axon
 
@@ -84,49 +54,13 @@ model =
   |> Axon.dense(1)
   |> Axon.sigmoid()
 
+# Axon has support for 1D and 2D convolutions, RNNs, normalizations, activations
+# weight initialization, mixed precision, all the common loss functions, various LR schedulers 
+# the most common optimizers
+
 template = Nx.template({16, 224}, :f32)
 Axon.Display.as_graph(model, template)
 ```
-
-## Bumblebee
-
-<!-- livebook:{"attrs":"eyJjb21waWxlciI6ImV4bGEiLCJzZXF1ZW5jZV9sZW5ndGgiOjEwMCwidGFza19pZCI6InRleHRfY2xhc3NpZmljYXRpb24iLCJ0b3BfayI6bnVsbCwidmFyaWFudF9pZCI6ImJlcnRfZmluYmVydF9zZW50aW1lbnQifQ","chunks":[[0,313],[315,580]],"kind":"Elixir.KinoBumblebee.TaskCell","livebook_object":"smart_cell"} -->
-
-```elixir
-{:ok, model_info} = Bumblebee.load_model({:hf, "ProsusAI/finbert"})
-{:ok, tokenizer} = Bumblebee.load_tokenizer({:hf, "google-bert/bert-base-uncased"})
-
-serving =
-  Bumblebee.Text.text_classification(model_info, tokenizer,
-    compile: [batch_size: 1, sequence_length: 100],
-    defn_options: [compiler: EXLA]
-  )
-
-text_input =
-  Kino.Input.textarea("Text",
-    default:
-      "Our stock predictions indicate that we can expect a rapid growth over the next year."
-  )
-
-form = Kino.Control.form([text: text_input], submit: "Run")
-frame = Kino.Frame.new()
-
-Kino.listen(form, fn %{data: %{text: text}} ->
-  Kino.Frame.render(frame, Kino.Text.new("Running..."))
-  output = Nx.Serving.run(serving, text)
-
-  output.predictions
-  |> Enum.map(&{&1.label, &1.score})
-  |> Kino.Bumblebee.ScoredList.new()
-  |> then(&Kino.Frame.render(frame, &1))
-end)
-
-Kino.Layout.grid([form, frame], boxed: true, gap: 16)
-```
-
-## LiveBook
-
-This is Livebook, a Jupyter Notebook style interface in Elixir
 
 ## Build and Train a Model From Scratch
 
@@ -139,3 +73,25 @@ See Livebook `Image Classification`
 ## Deploy a Model into Production Elixir System
 
 See branch `11785` of the `Torus` codebase at `https://github.com/Simon-Initiative/oli-torus/tree/11785`
+
+## Results
+
+#### Training a new model from scratch
+
+While it was a fun and interesting experience building out HW1PT2 entirely in Elixir, it is clear that the ecosystem isn't at
+a place where even moderate scale model training can be easily done.
+
+The Python Deep Learning stack, with its assuredly tens and tens of thousands more engineering hours behind it, is simply more 
+robust, more feature rich and more battle tested.
+
+#### Fine-tuning an pre-trained model
+
+While this work proved to be successful and I was indeed able to fine tune ResNet for a transfer learning task, I cannot image doing this again in Elixir. There is just such a massively broader variety of examples and documentation available for PyTorch for this type of task, that it is ridiculous to spend time trying to figure things out in Elixir.
+
+#### Model Deployment
+
+Deploying a model for inference in an Elixir production application is straightforward with `Nx.Serving` providing "out of the box" batch inference.
+
+## Conclusion
+
+While you can indeed do some (limited) Deep Learning work entirely Elixir, why would you?
