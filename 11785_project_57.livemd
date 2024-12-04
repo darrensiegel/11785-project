@@ -34,6 +34,8 @@ course authoring and delivery system developed here at CMU.
 
 ## A Taste of Elixir
 
+Here we spawn 10,000 Erlang processes to automatically run over all avaiable CPUs, then send a message back (the result of the computation) to our host process.
+
 ```elixir
 parallel_map = fn collection, func ->
   Enum.map(collection, fn item -> Task.async(fn -> func.(item) end) end)
