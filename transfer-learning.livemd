@@ -41,6 +41,12 @@ We will be fine tuning a pre-trained vision model in order to have it be able to
 * "code": images which contain screenshots of source code
 * "other": images which are *not* in either of the first two classes
 
+We will optimize a categorical cross entropy loss:
+
+$$\mathcal{L}_{\text{CCE}} = -\frac{1}{N} \sum_{i=1}^{N} \sum_{k=1}^{C} y_{i,k} \log(\hat{y}_{i,k})$$
+
+Where $N$ is the number of samples, $C$ is the number of classes, $y_{i,k}$ is the true label for sample $i$ and class $k$ and $\hat{y}_{i,k}$ is the predicted probability for sample $i$ and class $k$.
+
 This model will then be incorporated into `Torus` and fronted by an course author facing
 feature: When a user uploads an image to use in their course learning material, model
 inference determines if the image is likely a screenshot of tabular data or source code. If 
