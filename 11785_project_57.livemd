@@ -1,0 +1,139 @@
+# 11785 Project 57
+
+```elixir
+Mix.install(
+  [
+    {:kino_bumblebee, "~> 0.5.0"},
+    {:exla, ">= 0.0.0"},
+    {:axon, "~> 0.7.0"},
+    {:table_rex, "~> 3.1.1"},
+    {:polaris, "~> 0.1.0"},
+    {:hackney, "~> 1.17"},
+    {:table_rex, "~> 3.1.1"}
+  ],
+  config: [nx: [default_backend: EXLA.Backend]]
+)
+```
+
+## Project Goal
+
+### Assess whether recent advancements in the **Elixir programming language** ecosystem make it a viable alternative to Python for Deep Learning
+
+> Elixir: A functional programming language that runs on the Erlang VM, known for its concurrency, fault tolerance and ease of distributed computing
+> 
+> Learn more: https://elixir-lang.org/
+
+## Tasks
+
+1. Build and train a model from scratch (by replicating HW1PT2)
+2. Fine tune a pre-trained model for a transfer learning task
+3. Deploy a trained model for inference into a production Elixir system
+
+The production system: `Torus` (https://github.com/Simon-Initiative/oli-torus), an open source,
+course authoring and delivery system developed here at CMU.
+
+## A Taste of Elixir
+
+```elixir
+parallel_map = fn collection, func ->
+  Enum.map(collection, fn item -> Task.async(fn -> func.(item) end) end)
+  |> Enum.map(&Task.await(&1))
+end
+
+parallel_map.(1..10_000, fn i -> i ** 3 end)
+```
+
+### Recent Elixir Advancements
+
+* `Nx` - GPU accelerated tensor library
+* `Axon` - Neural network model creation and training
+* `Bumblebee` - Pretrained model access
+* `Livebook` - Jupyter Notebook for Elixir
+
+## Nx
+
+```elixir
+import Nx
+
+# 1. Create tensors
+a = Nx.tensor([[1, 2, 3], [1, 2, 3]])
+b = Nx.tensor([[4, 5, 6], [7, 8, 9]])
+
+# 2. Basic element-wise operations
+# Add 1 to each element in `a`
+c = Nx.add(a, 1)
+# Multiply each element in `a` by 2
+d = Nx.multiply(a, 2)
+
+# 3. Matrix multiplication
+e = Nx.multiply(a, b)
+```
+
+## Axon
+
+```elixir
+model =
+  Axon.input("input")
+  |> Axon.dense(256)
+  |> Axon.relu()
+  |> Axon.dense(256)
+  |> Axon.relu()
+  |> Axon.dropout(rate: 0.3)
+  |> Axon.dense(1)
+  |> Axon.sigmoid()
+
+template = Nx.template({16, 224}, :f32)
+Axon.Display.as_graph(model, template)
+```
+
+## Bumblebee
+
+<!-- livebook:{"attrs":"eyJjb21waWxlciI6ImV4bGEiLCJzZXF1ZW5jZV9sZW5ndGgiOjEwMCwidGFza19pZCI6InRleHRfY2xhc3NpZmljYXRpb24iLCJ0b3BfayI6bnVsbCwidmFyaWFudF9pZCI6ImJlcnRfZmluYmVydF9zZW50aW1lbnQifQ","chunks":[[0,313],[315,580]],"kind":"Elixir.KinoBumblebee.TaskCell","livebook_object":"smart_cell"} -->
+
+```elixir
+{:ok, model_info} = Bumblebee.load_model({:hf, "ProsusAI/finbert"})
+{:ok, tokenizer} = Bumblebee.load_tokenizer({:hf, "google-bert/bert-base-uncased"})
+
+serving =
+  Bumblebee.Text.text_classification(model_info, tokenizer,
+    compile: [batch_size: 1, sequence_length: 100],
+    defn_options: [compiler: EXLA]
+  )
+
+text_input =
+  Kino.Input.textarea("Text",
+    default:
+      "Our stock predictions indicate that we can expect a rapid growth over the next year."
+  )
+
+form = Kino.Control.form([text: text_input], submit: "Run")
+frame = Kino.Frame.new()
+
+Kino.listen(form, fn %{data: %{text: text}} ->
+  Kino.Frame.render(frame, Kino.Text.new("Running..."))
+  output = Nx.Serving.run(serving, text)
+
+  output.predictions
+  |> Enum.map(&{&1.label, &1.score})
+  |> Kino.Bumblebee.ScoredList.new()
+  |> then(&Kino.Frame.render(frame, &1))
+end)
+
+Kino.Layout.grid([form, frame], boxed: true, gap: 16)
+```
+
+## LiveBook
+
+This is Livebook, a Jupyter Notebook style interface in Elixir
+
+## Build and Train a Model From Scratch
+
+See Livebook `11785 - HW1PT2`
+
+## Fine Tune a Pre-Trained Model for a Transfer Learning Task
+
+See Livebook `Image Classification`
+
+## Deploy a Model into Production Elixir System
+
+See branch `11785` of the `Torus` codebase at `https://github.com/Simon-Initiative/oli-torus/tree/11785`
